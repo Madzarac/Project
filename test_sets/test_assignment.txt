@@ -1,0 +1,12 @@
+abundance_estimates = {'R1': 0.5, 'R2': 0.16, 'R3': 0.32}
+reads = {
+    'read1': [('R1', 0.9)],
+    'read2': [('R1', 0.05), ('R2', 0.4)],
+    'read3': [('R1', 0.85), ('R3', 0.65)],
+    'read4': [('R2', 0.35), ('R3', 0.12)],
+    'read5': [('R3', 0.8), ('R1', 0.3)],
+    'read6': [('R1', 0.85), ('R3', 0.85)]
+}
+mora = MoraAssignment(abundance_estimates, reads)
+mora.assign_reads()
+print(mora.assignments)
