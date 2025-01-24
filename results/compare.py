@@ -1,4 +1,10 @@
 def compare_mappings(true_file, output_file, comparison_file):
+    """
+    Initialize the estimator by parsing the SAM file
+    :param true_file: Path to the .txt file with true, expected mappings
+    :param output_file: Path to the .txt file with the results of assign.py chosen mappings
+    :param comparison_file: Path to the .txt file where the function will write comparison of results
+    """
     true_mappings = {}
 
     with open(true_file, 'r') as infile:
