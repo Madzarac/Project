@@ -1,4 +1,3 @@
-import numpy as np
 from collections import defaultdict
 import pysam
 from genericpath import samefile
@@ -7,8 +6,8 @@ import sys
 class AbundanceEstimator:
     def __init__(self, sam_file):
         """
-        Initialize the estimator by parsing the SAM file
-        :param sam_file: Path to the SAM file containing alignment information
+        Initialize the estimator by parsing the SAM file.
+        :param sam_file: Path to the SAM file containing alignment information.
         """
         self.references = {}  # {reference_name: reference_length (LN)}
         self.read_assignments = defaultdict(list)  # {read_id: [(reference_name, mapping_score (AS))]}
@@ -20,7 +19,7 @@ class AbundanceEstimator:
 
     def _parse_sam_file(self, sam_file):
         """
-        Parse the SAM file to extract reference lengths (from @SQ) and read mappings (AS field)
+        Parse the SAM file to extract reference lengths (from @SQ) and read mappings (AS field).
         """
         samfile = pysam.AlignmentFile(sam_file, "r")
 
@@ -30,22 +29,29 @@ class AbundanceEstimator:
             ref_len = ref_info['LN']
             self.references[ref_name] = ref_len
 
+        # Obrada očitanja
         for read in samfile:
             read_id = read.query_name
             ref_name = read.reference_name
             if read.flag != 4:
-              if ref_name != None:  # Checks if read is mapped
-                  as_field = read.get_tag('AS') if read.has_tag('AS') else 0
-                  if as_field > 0:  # Use only mapped reads with positive AS score
-                      if read_id not in self.read_assignments:
-                          self.read_assignments[read_id] = []
-                      self.read_assignments[read_id].append((ref_name, as_field))
+              if ref_name != None:  # Provjera da očitanje nije nemapirano
+                if read.has_tag('AS'):
+                  as_field = read.get_tag('AS')
+                  if as_field > 0:
+                    if read_id not in self.read_assignments:
+                      self.read_assignments[read_id] = []
+                    self.read_assignments[read_id].append((ref_name, as_field))
+                  else:
+                    print(f"{read_id} AS <= 0: {as_field}")
+                else:
+                  print(f"{read_id} has NO AS tag")
 
+        # Zatvaranje SAM datoteke
         samfile.close()
 
     def _initialize_abundances(self):
         """
-        Compute initial abundance estimates based on mapping scores and reference lengths
+        Compute initial abundance estimates based on mapping scores and reference lengths.
         """
         strain_scores = defaultdict(float)
 
@@ -64,7 +70,7 @@ class AbundanceEstimator:
 
     def em_algorithm(self, max_iter=300, eps=1e-3, min_abundance=0.1):
         """
-        Run the EM algorithm to refine strain abundances
+        Run the EM algorithm to refine strain abundances.
         """
         strain_ids = list(self.strain_abundance.keys())
         new_abundance = {strain: 0.0 for strain in strain_ids}
@@ -102,6 +108,7 @@ class AbundanceEstimator:
                         converged = False
                     self.strain_abundance[strain] = new_abundance[strain] / total_abundance
 
+
             if iteration % 10 == 0:
                 self.apply_set_cover(valid_strains, min_abundance)
 
@@ -110,7 +117,7 @@ class AbundanceEstimator:
 
     def apply_set_cover(self, valid_strains, min_abundance):
         """
-        Reduce valid strains using a set cover heuristic
+        Reduce valid strains using a set cover heuristic.
         """
         removable_strains = {strain for strain, abundance in self.strain_abundance.items()
                              if valid_strains[strain] and abundance < min_abundance}
@@ -128,21 +135,17 @@ class AbundanceEstimator:
 
 class MoraAssignment:
     def __init__(self, references, reads):
-        """
-        Initialize mora for read assignment
-        :param references: reference and abundance pairs in dictionary format
-        :param reads: reads and theri possible mappings
-        """
-        self.references = references
+        self.references = references  # dictionary, reference and abundance pairs
         self.reads = dict(sorted(reads.items(), key=lambda item: max(score for _, score in item[1]), reverse=True))  # sorted by highest scores
         self.assignments = {ref: [] for ref in references}  # chosen mappings
         self.reference_capacity = {ref: round(references[ref] * len(self.reads)) for ref in references}  # reference capacities
         self.unassigned_reads = []  # to store unassigned reads for reprocessing
+        print("Reference Capacities Calculation:")
+        for ref in references:
+            calculated_capacity = round(references[ref] * len(self.reads))
+            print(f"Reference {ref}: {references[ref]} * {len(self.reads)} = {calculated_capacity}")
 
     def calculate_priority(self, read_id):
-        """
-        Calculates priority (1, 2 or 3) for given read
-        """
         # Sort mappings of the read by score, best to worst
         read_mappings = sorted(self.reads[read_id], key=lambda x: x[1], reverse=True)
         best_score = read_mappings[0][1]
@@ -154,9 +157,6 @@ class MoraAssignment:
         return 3  # Priority 3 for others
 
     def assign_read(self, read_id, priority):
-        """
-        Assigns mappings to reads priority 1 and 2 if possible
-        """
         read_mappings = self.reads[read_id]
         if priority == 1:
             # Priority 1: Assign to the unique reference
@@ -164,32 +164,29 @@ class MoraAssignment:
             if self.reference_capacity[ref] > 0:
                 self.assignments[ref].append((read_id, score))
                 self.reference_capacity[ref] -= 1
-            return True
+                return True
         else:
-            # Priority 2: reads are sorted and then assigned to the reference with the best mapping score if that reference has space. If the reference is at full capacity, the read is relabeled as a priority 3 read
+            # For Priority 2 or 3: Add mappings to the unassigned_reads list for reprocessing
             ref, score = read_mappings[0]
-            if self.reference_capacity[ref] > 0 and self.reference_capacity == 2:
+            if self.reference_capacity[ref] > 0: # and self.reference_capacity == 2:
                 self.assignments[ref].append((read_id, score))
                 self.reference_capacity[ref] -= 1
                 return True
             else:
-                #Priority 3: Add mappings to the unassigned_mappings list
+                # For Priority 2 or 3: Add mappings to the unassigned_mappings list for global reprocessing
                 self.unassigned_reads.append(read_id)
                 return False
 
     def reprocess_unassigned_mappings(self):
-        """
-        Assigns mappings to reads priority 3 if possible
-        """
         # Collect all mappings for unassigned reads
         all_mappings = []
         for read_id in self.unassigned_reads:
             for ref, score in self.reads[read_id]:
                 all_mappings.append((read_id, ref, score))
 
-        # Sort all mappings by score (highest to lowest)
+        # Sort all mappings globally by score (highest to lowest)
         all_mappings.sort(key=lambda x: x[2], reverse=True)
-        # Try to assign the reads based on sorted scores
+        # Try to assign the reads based on global sorted scores
         remaining_unassigned_reads = set(self.unassigned_reads)
         for read_id, ref, score in all_mappings:
             if read_id in remaining_unassigned_reads and self.reference_capacity[ref] > 0:
@@ -200,10 +197,8 @@ class MoraAssignment:
         # Update the list of unassigned reads
         self.unassigned_reads = list(remaining_unassigned_reads)
 
+
     def reassign_read(self, read_id):
-        """
-        Opening up space to assign unassigned reads
-        """
         # Try to "open up space" for the given read
         read_mappings = self.reads[read_id]
         for ref, score in read_mappings:
@@ -230,7 +225,7 @@ class MoraAssignment:
             priority = self.calculate_priority(read_id)
             self.assign_read(read_id, priority)
 
-        # Second pass: Reprocess unassigned mappings (priority 3)
+        # Second pass: Reprocess unassigned mappings
         self.reprocess_unassigned_mappings()
 
         # Third pass: Try to reassign unassigned reads by opening up space
@@ -242,8 +237,9 @@ class MoraAssignment:
 
 
 if __name__ == "__main__":
-    samfile = sys.argv[1]
+    samfile = input("Input path to SAM file: ").strip()
     sam_file = pysam.AlignmentFile(samfile, "r")
+    
     filtered_sam = ""
     no_alignment = ""
 
@@ -252,18 +248,23 @@ if __name__ == "__main__":
             filtered_sam += str(read) + "\n"
         else:
             no_alignment += str(read.query_name) + " NO ALIGNMENT" + "\n"
-            
+
     estimator = AbundanceEstimator(samfile)
     estimator.em_algorithm()
-    
+
     mora = MoraAssignment(estimator.strain_abundance, estimator.read_assignments)
     mora.assign_reads()
-    
+
     result = ""
     for reference, reads in mora.assignments.items():
         for read, score in reads:
             result += f"{read}\t{reference}\n"
 
     result += no_alignment
-    with open('2bac4strain.txt', 'w') as file:
+
+    output_filename = input("Input path to txt file for storing results: ").strip()
+    
+    with open(output_filename, 'w') as file:
         file.write(result)
+
+    print(f"Results saved in file '{output_filename}'.")
