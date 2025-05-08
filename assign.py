@@ -9,10 +9,10 @@ class AbundanceEstimator:
         Initialize the estimator by parsing the SAM file.
         :param sam_file: Path to the SAM file containing alignment information.
         """
-        self.references = {}  # {reference_name: reference_length (LN)}
+        self.references = {}                       # {reference_name: reference_length (LN)}
         self.read_assignments = defaultdict(list)  # {read_id: [(reference_name, mapping_score (AS))]}
-        self.strain_abundance = {}  # {reference_name: initial abundance estimate}
-        self.strain_coverage = {}  # {reference_name: coverage fraction}
+        self.strain_abundance = {}                 # {reference_name: initial abundance estimate}
+        self.strain_coverage = {}                  # {reference_name: coverage fraction}
 
         self._parse_sam_file(sam_file)
         self._initialize_abundances()
@@ -23,18 +23,18 @@ class AbundanceEstimator:
         """
         samfile = pysam.AlignmentFile(sam_file, "r")
 
-        #header
+        # checks header for references length
         for ref_info in samfile.header['SQ']:
             ref_name = ref_info['SN']
             ref_len = ref_info['LN']
             self.references[ref_name] = ref_len
 
-        # Obrada očitanja
+        # extracts AS field
         for read in samfile:
             read_id = read.query_name
             ref_name = read.reference_name
             if read.flag != 4:
-              if ref_name != None:  # Provjera da očitanje nije nemapirano
+              if ref_name != None:  # Checks if read is mapped
                 if read.has_tag('AS'):
                   as_field = read.get_tag('AS')
                   if as_field > 0:
@@ -46,7 +46,6 @@ class AbundanceEstimator:
                 else:
                   print(f"{read_id} has NO AS tag")
 
-        # Zatvaranje SAM datoteke
         samfile.close()
 
     def _initialize_abundances(self):
@@ -56,11 +55,11 @@ class AbundanceEstimator:
         strain_scores = defaultdict(float)
 
         for read_id, mappings in self.read_assignments.items():
-            total_score = sum(score for _, score in mappings)
+            total_score = sum(score for _, score in mappings) # sums AS scores for all mapings of the read
             for ref_name, score in mappings:
                 ref_len = self.references[ref_name]
-                likelihood = score / ref_len  # Normalize by reference length
-                strain_scores[ref_name] += likelihood / total_score
+                likelihood = score / ref_len  # Normalize by reference length, as longer reference could have better score because its longer
+                strain_scores[ref_name] += likelihood / total_score # splits likelihood among all possible mappings
 
         # Normalize abundances to sum to 1
         total_abundance = sum(strain_scores.values())
@@ -72,9 +71,9 @@ class AbundanceEstimator:
         """
         Run the EM algorithm to refine strain abundances.
         """
-        strain_ids = list(self.strain_abundance.keys())
-        new_abundance = {strain: 0.0 for strain in strain_ids}
-        valid_strains = {strain: True for strain in strain_ids}
+        strain_ids = list(self.strain_abundance.keys())            # list of all references (strains)
+        new_abundance = {strain: 0.0 for strain in strain_ids}     # dict that stores updated abundance per strain in each iteration
+        valid_strains = {strain: True for strain in strain_ids}    # a boolean flag for each strain
 
         for iteration in range(max_iter):
             # M-step: Update strain counts using mappings
@@ -85,12 +84,14 @@ class AbundanceEstimator:
                 total_prob = 0.0
                 probs = []
 
+                # Compute probability of this read coming from each reference
                 for ref_name, score in mappings:
                     if valid_strains[ref_name]:
                         prob = score * self.strain_abundance[ref_name] * self.strain_coverage[ref_name]
                         probs.append((ref_name, prob))
                         total_prob += prob
 
+                # Each read is fractionally assigned to all valid references it maps to, based on how probable each i
                 if total_prob > 0:
                     for ref_name, prob in probs:
                         new_abundance[ref_name] += prob / total_prob
@@ -100,15 +101,16 @@ class AbundanceEstimator:
             max_diff = 0.0
             converged = True
 
+            # Normalize new abundance values to sum to 1
             for strain in self.strain_abundance:
                 if valid_strains[strain]:
                     diff = abs(new_abundance[strain] / total_abundance - self.strain_abundance[strain])
                     max_diff = max(max_diff, diff)
-                    if diff > eps:
+                    if diff > eps:  # If all strains have changed less than eps, we stop, othervise continue
                         converged = False
                     self.strain_abundance[strain] = new_abundance[strain] / total_abundance
 
-
+            # Every 10 iterations, call apply_set_cover()
             if iteration % 10 == 0:
                 self.apply_set_cover(valid_strains, min_abundance)
 
@@ -117,7 +119,7 @@ class AbundanceEstimator:
 
     def apply_set_cover(self, valid_strains, min_abundance):
         """
-        Reduce valid strains using a set cover heuristic.
+        Eliminates strains with abundance smaller than min_abundance, unless they explain a read uniquely
         """
         removable_strains = {strain for strain, abundance in self.strain_abundance.items()
                              if valid_strains[strain] and abundance < min_abundance}
@@ -135,17 +137,20 @@ class AbundanceEstimator:
 
 class MoraAssignment:
     def __init__(self, references, reads):
-        self.references = references  # dictionary, reference and abundance pairs
+        self.references = references                                                                                 # dictionary, {ref_name: abundance}
         self.reads = dict(sorted(reads.items(), key=lambda item: max(score for _, score in item[1]), reverse=True))  # sorted by highest scores
-        self.assignments = {ref: [] for ref in references}  # chosen mappings
-        self.reference_capacity = {ref: round(references[ref] * len(self.reads)) for ref in references}  # reference capacities
-        self.unassigned_reads = []  # to store unassigned reads for reprocessing
+        self.assignments = {ref: [] for ref in references}                                                           # chosen mappings
+        self.reference_capacity = {ref: round(references[ref] * len(self.reads)) for ref in references}              # reference capacities
+        self.unassigned_reads = []                                                                                   # to store unassigned reads for reprocessing
         print("Reference Capacities Calculation:")
         for ref in references:
             calculated_capacity = round(references[ref] * len(self.reads))
             print(f"Reference {ref}: {references[ref]} * {len(self.reads)} = {calculated_capacity}")
 
     def calculate_priority(self, read_id):
+        """
+        Calculates priority for each read.
+        """
         # Sort mappings of the read by score, best to worst
         read_mappings = sorted(self.reads[read_id], key=lambda x: x[1], reverse=True)
         best_score = read_mappings[0][1]
@@ -157,6 +162,10 @@ class MoraAssignment:
         return 3  # Priority 3 for others
 
     def assign_read(self, read_id, priority):
+        """
+        Assigns reads with priority 1. 
+        For 2 and 3 assigning to best reference if there is space, if not add to unassigned_reads for later
+        """
         read_mappings = self.reads[read_id]
         if priority == 1:
             # Priority 1: Assign to the unique reference
@@ -178,6 +187,9 @@ class MoraAssignment:
                 return False
 
     def reprocess_unassigned_mappings(self):
+        """
+        Using global best scores, assign read greediy, favoring high-score mappings as long as theres space for reference
+        """
         # Collect all mappings for unassigned reads
         all_mappings = []
         for read_id in self.unassigned_reads:
@@ -199,6 +211,9 @@ class MoraAssignment:
 
 
     def reassign_read(self, read_id):
+        """
+        Rearanges reads by removing lower quality mappings to another compatible reference.
+        """
         # Try to "open up space" for the given read
         read_mappings = self.reads[read_id]
         for ref, score in read_mappings:
@@ -220,6 +235,9 @@ class MoraAssignment:
         return False
 
     def assign_reads(self):
+        """
+        Orchestrates assignment process.
+        """
         # First pass: Attempt to assign reads based on priority
         for read_id in self.reads:
             priority = self.calculate_priority(read_id)
